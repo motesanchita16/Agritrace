@@ -1,0 +1,50 @@
+{
+  "name": "agritrace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgriTrace - blockchain-based agricultural supply-chain traceability and mass-balance verification",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11.0",
+    "npm": ">=10"
+  },
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*",
+    "blockchain"
+  ],
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "dev:web": "npm run dev --workspace @agritrace/web --if-present",
+    "dev:api": "npm run dev --workspace @agritrace/api --if-present",
+    "chain:node": "npm run node --workspace @agritrace/blockchain --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:reset-demo": "cross-env SEED_RESET=true tsx prisma/seed.ts",
+    "db:health": "tsx prisma/health.ts",
+    "db:verify": "tsx prisma/verify-cli.ts",
+    "db:typecheck": "tsc -p prisma --noEmit"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.8.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.4.5",
+    "prisma": "^6.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.6.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.0.0",
+    "bcryptjs": "^2.4.3"
+  }
+}

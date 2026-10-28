@@ -1,0 +1,7 @@
+{
+  "name": "@agritrace/blockchain",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Solidity contracts and Hardhat tests",
+  "scripts": {}
+}

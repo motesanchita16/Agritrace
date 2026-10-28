@@ -1,0 +1,18 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+# Hardhat
+blockchain/artifacts/
+blockchain/cache/
+blockchain/typechain-types/
+# Local evidence storage (development adapter)
+services/api/storage/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

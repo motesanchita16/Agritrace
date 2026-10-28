@@ -1,0 +1,500 @@
+// AgriTrace database schema.
+// Quantities: INTEGER GRAMS only (Int, max 2,147,483,647 g = ~2,147 tonnes per batch).
+// Money: Decimal(14,2) exact fixed-point + ISO currency code. Never Float.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+enum Role {
+  FARMER
+  DISTRIBUTOR
+  WHOLESALER
+  PROCESSOR
+  RETAILER
+  AUDITOR
+  ADMIN
+  CONSUMER
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  VERIFIED
+  REJECTED
+  FLAGGED
+  EXPIRED
+}
+
+enum BatchStatus {
+  PENDING_CHAIN
+  ACTIVE
+  IN_TRANSIT
+  CONSUMED
+  RECALLED
+}
+
+enum ChainStatus {
+  NOT_APPLICABLE
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+enum OperationType {
+  REGISTER
+  SPLIT
+  MERGE
+  PROCESS
+}
+
+enum TransferStatus {
+  PENDING
+  DISPATCHED
+  ACCEPTED
+  DISPUTED
+  CANCELLED
+}
+
+enum ReceiptOutcome {
+  ACCEPTED
+  DISPUTED
+}
+
+enum EvidenceType {
+  HARVEST_RECORD
+  WEIGHING_SLIP
+  DELIVERY_RECEIPT
+  PROCESSING_RECORD
+  LAB_REPORT
+  CERTIFICATION_DOC
+  INSPECTION_RECORD
+  OTHER
+}
+
+enum StorageType {
+  LOCAL
+  IPFS
+}
+
+enum RecallStatus {
+  OPEN
+  INVESTIGATING
+  ACTIVE_RECALL
+  RESOLVED
+  CLOSED
+}
+
+enum RecallSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TraceDirection {
+  SOURCE
+  UPSTREAM
+  DOWNSTREAM
+}
+
+enum ExposureLevel {
+  SUSPECTED
+  CONFIRMED
+}
+
+enum AlertStatus {
+  SENT
+  ACKNOWLEDGED
+}
+
+enum PriceKind {
+  FARM_GATE
+  WHOLESALE
+  RETAIL
+}
+
+enum DataQuality {
+  RECORDED
+  ESTIMATED
+}
+
+// ---------- Models ----------
+model User {
+  id           String        @id @default(uuid())
+  name         String
+  email        String        @unique
+  passwordHash String
+  role         Role
+  status       AccountStatus @default(PENDING)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  farms             Farm[]
+  createdBatches    Batch[]               @relation("BatchCreator")
+  heldBatches       Batch[]               @relation("BatchHolder")
+  operations        BatchOperation[]      @relation("OperationActor")
+  sentTransfers     BatchTransfer[]       @relation("TransferSender")
+  receivedTransfers BatchTransfer[]       @relation("TransferRecipient")
+  confirmations     ReceiptConfirmation[] @relation("ReceiptConfirmer")
+  evidence          Evidence[]
+  reviewedCerts     Certification[]       @relation("CertReviewer")
+  recallsInitiated  RecallCase[]          @relation("RecallInitiator")
+  recallAlerts      RecallAlert[]         @relation("AlertRecipient")
+  priceRecords      PriceRecord[]         @relation("PriceRecorder")
+  auditLogs         AuditLog[]            @relation("AuditActor")
+  notifications     Notification[]
+  refreshTokens     RefreshToken[]
+
+  @@index([role, status])
+}
+
+model Farm {
+  id                 String             @id @default(uuid())
+  ownerId            String
+  name               String
+  region             String
+  approxLatitude     Decimal?           @db.Decimal(8, 5)
+  approxLongitude    Decimal?           @db.Decimal(8, 5)
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  owner          User            @relation(fields: [ownerId], references: [id])
+  batches        Batch[]
+  certifications Certification[]
+
+  @@unique([ownerId, name])
+  @@index([region])
+}
+
+model Batch {
+  id                    String      @id @default(uuid())
+  publicId              String      @unique // safe identifier used in QR URLs
+  cropType              String
+  originFarmId          String
+  creatorId             String
+  currentHolderId       String
+  originOperationId     String?
+  initialQuantityGrams  Int
+  currentQuantityGrams  Int
+  harvestDate           DateTime    @db.Date
+  status                BatchStatus @default(ACTIVE)
+  chainStatus           ChainStatus @default(NOT_APPLICABLE)
+  chainTxHash           String?
+  evidenceHash          String?
+  idempotencyKey        String?     @unique
+  version               Int         @default(0) // optimistic concurrency counter
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  originFarm        Farm                  @relation(fields: [originFarmId], references: [id])
+  creator           User                  @relation("BatchCreator", fields: [creatorId], references: [id])
+  currentHolder     User                  @relation("BatchHolder", fields: [currentHolderId], references: [id])
+  originOperation   BatchOperation?       @relation("OperationOutputs", fields: [originOperationId], references: [id])
+  parentLinks       BatchLineage[]        @relation("LineageChild")
+  childLinks        BatchLineage[]        @relation("LineageParent")
+  transfers         BatchTransfer[]
+  evidence          Evidence[]
+  certifications    Certification[]
+  recallsAsRoot     RecallCase[]          @relation("RecallRoot")
+  recallEntries     RecallAffectedBatch[]
+  priceRecords      PriceRecord[]
+
+  @@index([status])
+  @@index([currentHolderId, status])
+  @@index([originFarmId])
+  @@index([cropType])
+  @@index([originOperationId])
+}
+
+model BatchOperation {
+  id             String        @id @default(uuid())
+  type           OperationType
+  actorId        String
+  inputGrams     Int           @default(0)
+  outputGrams    Int
+  lossGrams      Int           @default(0)
+  lossReason     String?
+  reason         String?
+  idempotencyKey String        @unique
+  chainStatus    ChainStatus   @default(NOT_APPLICABLE)
+  chainTxHash    String?
+  createdAt      DateTime      @default(now())
+
+  actor         User           @relation("OperationActor", fields: [actorId], references: [id])
+  outputBatches Batch[]        @relation("OperationOutputs")
+  lineage       BatchLineage[]
+  evidence      Evidence[]
+
+  @@index([actorId, createdAt])
+  @@index([type])
+}
+
+model BatchLineage {
+  id               String   @id @default(uuid())
+  operationId      String
+  parentBatchId    String
+  childBatchId     String
+  contributedGrams Int
+  createdAt        DateTime @default(now())
+
+  operation   BatchOperation @relation(fields: [operationId], references: [id])
+  parentBatch Batch          @relation("LineageParent", fields: [parentBatchId], references: [id])
+  childBatch  Batch          @relation("LineageChild", fields: [childBatchId], references: [id])
+
+  @@unique([operationId, parentBatchId, childBatchId])
+  @@index([parentBatchId])
+  @@index([childBatchId])
+}
+
+model BatchTransfer {
+  id              String         @id @default(uuid())
+  batchId         String
+  senderId        String
+  recipientId     String
+  declaredGrams   Int
+  measuredGrams   Int?
+  status          TransferStatus @default(PENDING)
+  dispatchedAt    DateTime?
+  receivedAt      DateTime?
+  disputeReason   String?
+  idempotencyKey  String         @unique
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  batch     Batch                @relation(fields: [batchId], references: [id])
+  sender    User                 @relation("TransferSender", fields: [senderId], references: [id])
+  recipient User                 @relation("TransferRecipient", fields: [recipientId], references: [id])
+  receipt   ReceiptConfirmation?
+  evidence  Evidence[]
+
+  @@index([batchId])
+  @@index([recipientId, status])
+  @@index([senderId, status])
+}
+
+model ReceiptConfirmation {
+  id               String         @id @default(uuid())
+  transferId       String         @unique // one confirmation per transfer: blocks duplicates
+  confirmedById    String
+  outcome          ReceiptOutcome
+  measuredGrams    Int
+  discrepancyGrams Int // declared - measured (may be negative)
+  notes            String?
+  createdAt        DateTime       @default(now())
+
+  transfer    BatchTransfer @relation(fields: [transferId], references: [id])
+  confirmedBy User          @relation("ReceiptConfirmer", fields: [confirmedById], references: [id])
+
+  @@index([confirmedById])
+}
+
+model Evidence {
+  id                 String       @id @default(uuid())
+  type               EvidenceType
+  fileName           String
+  mimeType           String
+  sizeBytes          Int
+  sha256             String       @db.Char(64)
+  storageType        StorageType
+  storageRef         String
+  isPublic           Boolean      @default(false)
+  uploadedById       String
+  batchId            String?
+  operationId        String?
+  transferId         String?
+  recallCaseId       String?
+  integrityCheckedAt DateTime?
+  createdAt          DateTime     @default(now())
+
+  uploadedBy     User            @relation(fields: [uploadedById], references: [id])
+  batch          Batch?          @relation(fields: [batchId], references: [id])
+  operation      BatchOperation? @relation(fields: [operationId], references: [id])
+  transfer       BatchTransfer?  @relation(fields: [transferId], references: [id])
+  recallCase     RecallCase?     @relation(fields: [recallCaseId], references: [id])
+  certifications Certification[]
+  priceRecords   PriceRecord[]
+
+  @@index([sha256])
+  @@index([batchId])
+  @@index([operationId])
+  @@index([uploadedById])
+}
+
+model Certification {
+  id           String             @id @default(uuid())
+  type         String
+  issuer       String
+  farmId       String?
+  batchId      String?
+  issuedAt     DateTime           @db.Date
+  expiresAt    DateTime?          @db.Date
+  status       VerificationStatus @default(UNVERIFIED)
+  evidenceId   String?
+  notes        String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  farm       Farm?     @relation(fields: [farmId], references: [id])
+  batch      Batch?    @relation(fields: [batchId], references: [id])
+  evidence   Evidence? @relation(fields: [evidenceId], references: [id])
+  reviewedBy User?     @relation("CertReviewer", fields: [reviewedById], references: [id])
+
+  @@index([farmId])
+  @@index([batchId])
+  @@index([status])
+}
+
+model RecallCase {
+  id                 String         @id @default(uuid())
+  publicRef          String         @unique
+  rootBatchId        String
+  initiatorId        String
+  reason             String
+  severity           RecallSeverity
+  status             RecallStatus   @default(OPEN)
+  lineageIncomplete  Boolean        @default(false) // true => needs human review
+  resolutionNotes    String?
+  resolvedAt         DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  rootBatch   Batch                 @relation("RecallRoot", fields: [rootBatchId], references: [id])
+  initiator   User                  @relation("RecallInitiator", fields: [initiatorId], references: [id])
+  affected    RecallAffectedBatch[]
+  alerts      RecallAlert[]
+  evidence    Evidence[]
+
+  @@index([status])
+  @@index([rootBatchId])
+}
+
+model RecallAffectedBatch {
+  id           String         @id @default(uuid())
+  recallCaseId String
+  batchId      String
+  direction    TraceDirection
+  exposure     ExposureLevel  @default(SUSPECTED)
+  createdAt    DateTime       @default(now())
+
+  recallCase RecallCase @relation(fields: [recallCaseId], references: [id])
+  batch      Batch      @relation(fields: [batchId], references: [id])
+
+  @@unique([recallCaseId, batchId])
+  @@index([batchId])
+}
+
+model RecallAlert {
+  id             String      @id @default(uuid())
+  recallCaseId   String
+  recipientId    String
+  message        String
+  status         AlertStatus @default(SENT)
+  createdAt      DateTime    @default(now())
+  acknowledgedAt DateTime?
+
+  recallCase RecallCase @relation(fields: [recallCaseId], references: [id])
+  recipient  User       @relation("AlertRecipient", fields: [recipientId], references: [id])
+
+  @@unique([recallCaseId, recipientId])
+  @@index([recipientId, status])
+}
+
+model PriceRecord {
+  id            String      @id @default(uuid())
+  batchId       String
+  recordedById  String
+  kind          PriceKind
+  quantityGrams Int
+  totalAmount   Decimal     @db.Decimal(14, 2)
+  currency      String      @db.Char(3)
+  dataQuality   DataQuality @default(RECORDED)
+  evidenceId    String?
+  isPublic      Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+
+  batch         Batch               @relation(fields: [batchId], references: [id])
+  recordedBy    User                @relation("PriceRecorder", fields: [recordedById], references: [id])
+  evidence      Evidence?           @relation(fields: [evidenceId], references: [id])
+  shareRecords  FarmerShareRecord[]
+
+  @@index([batchId, kind])
+}
+
+model FarmerShareRecord {
+  id                 String      @id @default(uuid())
+  priceRecordId      String
+  farmerAmount       Decimal?    @db.Decimal(14, 2)
+  farmerSharePercent Decimal?    @db.Decimal(5, 2)
+  calculationMethod  String
+  dataQuality        DataQuality @default(ESTIMATED)
+  costBreakdown      Json? // amounts stored as strings to stay exact
+  isPublic           Boolean     @default(false)
+  createdAt          DateTime    @default(now())
+
+  priceRecord PriceRecord @relation(fields: [priceRecordId], references: [id])
+
+  @@index([priceRecordId])
+}
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  actorId       String?
+  action        String
+  resourceType  String
+  resourceId    String
+  metadata      Json?
+  correlationId String
+  createdAt     DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([resourceType, resourceId])
+  @@index([actorId, createdAt])
+  @@index([correlationId])
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  userAgent String?
+  ipAddress String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
